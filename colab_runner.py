@@ -167,30 +167,36 @@ def verify_data():
 
 def launch_training():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    cmd = [
-        sys.executable, "train_v2.py",
-        "--manifest",      "dataset_manifest.csv",
-        "--image_dir",     "datasets/GrowliFlowerL/images",
-        "--env_csv",       "datasets/growliflower_environmental_data.csv",
-        "--output_dir",    OUTPUT_DIR,
-        "--epochs",        str(EPOCHS),
-        "--batch_size",    str(BATCH_SIZE),
-        "--img_h",         str(IMG_H),
-        "--img_w",         str(IMG_W),
-        "--lr_gen",        str(LR_GEN),
-        "--lr_disc",       str(LR_DISC),
-        "--beta",          str(BETA),
-        "--lambda_perc",   str(LAMBDA_PERC),
-        "--lambda_fm",     str(LAMBDA_FM),
-        "--lambda_ssim",   str(LAMBDA_SSIM),
-        "--lambda_temp",   str(LAMBDA_TEMP),
-        "--context_window",str(CONTEXT_WIN),
-        "--num_workers",   "2",
-    ]
+    # Build CLI argument string
+    args = " ".join([
+        f"--manifest       dataset_manifest.csv",
+        f"--image_dir      datasets/GrowliFlowerL/images",
+        f"--env_csv        datasets/growliflower_environmental_data.csv",
+        f"--output_dir     '{OUTPUT_DIR}'",
+        f"--epochs         {EPOCHS}",
+        f"--batch_size     {BATCH_SIZE}",
+        f"--img_h          {IMG_H}",
+        f"--img_w          {IMG_W}",
+        f"--lr_gen         {LR_GEN}",
+        f"--lr_disc        {LR_DISC}",
+        f"--beta           {BETA}",
+        f"--lambda_perc    {LAMBDA_PERC}",
+        f"--lambda_fm      {LAMBDA_FM}",
+        f"--lambda_ssim    {LAMBDA_SSIM}",
+        f"--lambda_temp    {LAMBDA_TEMP}",
+        f"--context_window {CONTEXT_WIN}",
+        f"--num_workers    2",
+    ])
+    # Use os.system() — works in Colab/Jupyter unlike subprocess.Popen
+    # (Colab's sys.stdout does not support fileno(), which Popen requires)
+    cmd = f"{sys.executable} train_v2.py {args}"
     print(f"\n🚀 Launching training → checkpoints saved to Drive:\n   {OUTPUT_DIR}\n")
-    # Stream output live
-    proc = subprocess.Popen(cmd, stdout=sys.stdout, stderr=sys.stderr, text=True)
-    proc.wait()
+    print(f"   Command: {cmd}\n")
+    ret = os.system(cmd)
+    if ret != 0:
+        print(f"\n❌ Training exited with code {ret}")
+    else:
+        print("\n✅ Training complete!")
 
 
 # ============================================================
