@@ -134,8 +134,12 @@ def kl_divergence_loss(mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
 
 def reconstruction_loss(y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     """
-    Pixel-wise BCE reconstruction:  E[log p(y|x,z)]
-    Treats each pixel as an independent Bernoulli.
+    Pixel-wise MSE reconstruction loss.
+
+    MSE is used instead of BCE because:
+      1. It is safe inside torch.amp.autocast (BCE is not)
+      2. Works correctly for continuous pixel values in [0,1]
+      3. Standard choice in modern VAE/CVAE literature
 
     Args:
         y_hat : [B, C, H, W]  in [0,1]
@@ -143,7 +147,7 @@ def reconstruction_loss(y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
 
     Returns: scalar
     """
-    return F.binary_cross_entropy(y_hat, y, reduction="mean")
+    return F.mse_loss(y_hat, y.float())
 
 
 def cvae_loss(

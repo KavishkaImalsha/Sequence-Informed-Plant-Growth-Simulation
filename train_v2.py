@@ -35,7 +35,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.utils.tensorboard import SummaryWriter
 
 try:
@@ -86,7 +86,7 @@ def default_config() -> Dict:
         "img_size":       [240, 320],       # actual GrowliFlowerL patch size
         "context_window": 14,
         "batch_size":     8,               # reduced vs v1 due to 240x320 resolution
-        "num_workers":    4,
+        "num_workers":    2,
         # Architecture
         "img_channels":   3,
         "env_feature_size": ENV_FEATURE_DIM,
@@ -260,7 +260,7 @@ class SIPGSTrainer_V2:
         time_diff = batch["time_diff"].to(dev)  # [B, 1]
 
         # ── Generator forward ──────────────────────────────────────────────
-        with autocast(enabled=self.use_amp):
+        with autocast(device_type='cuda', enabled=self.use_amp):
             x = self.encoder(env_seq, seq_len)                      # [B, 128]
             y_hat, mu, logvar = self.generator(x, y, y_prior, time_diff)
 
@@ -293,7 +293,7 @@ class SIPGSTrainer_V2:
         self.scaler.update()
 
         # ── Discriminator forward / backward ──────────────────────────────
-        with autocast(enabled=self.use_amp):
+        with autocast(device_type='cuda', enabled=self.use_amp):
             d_real = self.discriminator(y)
             d_fake = self.discriminator(y_hat.detach())
             loss_disc, disc_val = compute_discriminator_loss(d_real, d_fake)
