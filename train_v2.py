@@ -104,6 +104,9 @@ def default_config() -> Dict:
         "lambda_temp":    0.5,             # temporal coherence (key for SSIM_tw)
         "lambda_ssim":    1.0,             # directly optimises SSIM metric
         "lambda_mse":     1.0,
+        # Speed: VGG perceptual loss is expensive — compute every N steps
+        # Set to 1 for maximum quality, 5 for 2x speedup, 10 for 3x speedup
+        "perc_freq":      5,
         # Optimisers (TTUR: D_lr > G_lr)
         "lr_gen":         1e-4,
         "lr_disc":        4e-4,
@@ -260,6 +263,11 @@ class SIPGSTrainer_V2:
         time_diff = batch["time_diff"].to(dev)  # [B, 1]
 
         # ── Generator forward ──────────────────────────────────────────────
+        # VGG perceptual loss is expensive (~50ms/step on T4).
+        # Compute every perc_freq steps for speed; skip on other steps.
+        use_perc = (self.global_step % cfg.get("perc_freq", 5) == 0)
+        lambda_perc_this_step = cfg["lambda_perc"] if use_perc else 0.0
+
         with autocast(device_type='cuda', enabled=self.use_amp):
             x = self.encoder(env_seq, seq_len)                      # [B, 128]
             y_hat, mu, logvar = self.generator(x, y, y_prior, time_diff)
@@ -277,7 +285,7 @@ class SIPGSTrainer_V2:
                 beta=cfg["beta"],
                 lambda_adv=cfg["lambda_adv"],
                 lambda_fm=cfg["lambda_fm"],
-                lambda_perc=cfg["lambda_perc"],
+                lambda_perc=lambda_perc_this_step,
                 lambda_temp=cfg["lambda_temp"],
                 lambda_ssim=cfg["lambda_ssim"],
                 lambda_mse=cfg["lambda_mse"],
