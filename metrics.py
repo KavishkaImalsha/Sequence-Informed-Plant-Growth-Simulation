@@ -330,8 +330,8 @@ class SequenceEvaluator:
         ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0)
         for sid in self._seq_hat:
             for (_, yh), (_, yr) in zip(
-                sorted(self._seq_hat[sid]),
-                sorted(self._seq_real[sid])
+                sorted(self._seq_hat[sid],  key=lambda x: x[0]),
+                sorted(self._seq_real[sid], key=lambda x: x[0])
             ):
                 ssim_metric.update(yh.unsqueeze(0), yr.unsqueeze(0))
         results["ssim"] = float(ssim_metric.compute().item())
@@ -343,9 +343,9 @@ class SequenceEvaluator:
         cs_ssim_tw_vals= []
 
         for sid in self._seq_hat:
-            # Sort by DAP within sequence
-            hat_sorted  = [f for _, f in sorted(self._seq_hat[sid])]
-            real_sorted = [f for _, f in sorted(self._seq_real[sid])]
+            # Sort by DAP float only — never compare frame tensors
+            hat_sorted  = [f for _, f in sorted(self._seq_hat[sid],  key=lambda x: x[0])]
+            real_sorted = [f for _, f in sorted(self._seq_real[sid], key=lambda x: x[0])]
 
             if len(hat_sorted) < 2:
                 continue
