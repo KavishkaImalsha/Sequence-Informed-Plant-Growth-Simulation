@@ -393,15 +393,60 @@ class SIPGSTrainer_V2:
 
         logger.info(f"Checkpoint saved → {ckpt}")
 
+    # ── Load Checkpoint (for resuming after crash / Colab timeout) ────────
+    def load_checkpoint(self, tag: str = "latest") -> int:
+        """
+        Load model weights, optimizer/scheduler states, and training metadata
+        from a saved checkpoint.
+
+        Returns:
+            start_epoch (int): epoch to resume from (next epoch after the saved one)
+        """
+        ckpt = self.out / f"ckpt_{tag}"
+        if not ckpt.exists():
+            logger.info(f"No checkpoint found at {ckpt} — starting from scratch.")
+            return 1
+
+        # Load model weights
+        self.encoder.load_state_dict(
+            torch.load(ckpt / "feature_encoder.pt", map_location=self.device))
+        self.generator.load_state_dict(
+            torch.load(ckpt / "generator.pt",       map_location=self.device))
+        self.discriminator.load_state_dict(
+            torch.load(ckpt / "discriminator.pt",   map_location=self.device))
+
+        # Load training state
+        state_path = ckpt / "training_state.pt"
+        if state_path.exists():
+            state = torch.load(state_path, map_location=self.device)
+            self.opt_gen.load_state_dict(state["opt_gen"])
+            self.opt_disc.load_state_dict(state["opt_disc"])
+            self.sched_gen.load_state_dict(state["sched_gen"])
+            self.sched_disc.load_state_dict(state["sched_disc"])
+            self.best_ssim_tw = state.get("best_ssim_tw", -1.0)
+            self.global_step  = state.get("global_step",  0)
+            resumed_epoch     = state.get("epoch", 0)
+        else:
+            resumed_epoch = 0
+
+        start_epoch = resumed_epoch + 1
+        logger.info(
+            f"✅ Resumed from checkpoint '{tag}' "
+            f"(epoch {resumed_epoch} → continuing from epoch {start_epoch}) "
+            f"| best_ssim_tw={self.best_ssim_tw:.4f} | step={self.global_step}"
+        )
+        return start_epoch
+
     # ── Main Training Loop ────────────────────────────────────────────────
-    def train(self, train_loader, val_loader):
+    def train(self, train_loader, val_loader, start_epoch: int = 1):
         cfg = self.cfg
         logger.info(
             f"Starting SI-PGS-R v2 training: {cfg['epochs']} epochs | "
-            f"res={cfg['img_size']} | device={self.device} | amp={self.use_amp}"
+            f"res={cfg['img_size']} | device={self.device} | amp={self.use_amp} "
+            f"| resuming from epoch {start_epoch}"
         )
 
-        for epoch in range(1, cfg["epochs"] + 1):
+        for epoch in range(start_epoch, cfg["epochs"] + 1):
             self.encoder.train()
             self.generator.train()
             self.discriminator.train()
@@ -468,6 +513,11 @@ class SIPGSTrainer_V2:
 
             if epoch % cfg["save_every_n_epochs"] == 0:
                 self._save_checkpoint(epoch, tag="latest")
+
+            # ── Emergency save every epoch to minimise lost work ──────────
+            # Colab free tier can disconnect unexpectedly — save lightweight
+            # state every epoch so at most 1 epoch is ever re-done
+            self._save_checkpoint(epoch, tag="latest")
 
         self._save_checkpoint(epoch, tag="final")
         self.writer.close()
@@ -544,7 +594,9 @@ def parse_args():
     p.add_argument("--latent_size",    type=int,   default=256)
     p.add_argument("--context_window", type=int,   default=14)
     p.add_argument("--patience",       type=int,   default=20)
-    p.add_argument("--num_workers",    type=int,   default=4)
+    p.add_argument("--num_workers",    type=int,   default=2)
+    p.add_argument("--resume",         action="store_true",
+                   help="Resume training from ckpt_latest in output_dir")
     p.add_argument("--use_wandb",      action="store_true")
     p.add_argument("--config",         type=str,   default=None,
                    help="Path to JSON config (overrides all flags).")
@@ -654,8 +706,24 @@ if __name__ == "__main__":
     )
 
     # Train
-    trainer = SIPGSTrainer_V2(cfg, device=device)
-    trainer.train(train_loader, val_loader)
+    trainer     = SIPGSTrainer_V2(cfg, device=device)
+    start_epoch = 1
+
+    # ── Auto-resume if --resume flag is set ───────────────────────────────
+    # Tries ckpt_latest first, falls back to ckpt_best, then epoch 1
+    if args.resume:
+        ckpt_dir = Path(cfg["output_dir"])
+        if (ckpt_dir / "ckpt_latest" / "training_state.pt").exists():
+            start_epoch = trainer.load_checkpoint(tag="latest")
+        elif (ckpt_dir / "ckpt_best" / "training_state.pt").exists():
+            start_epoch = trainer.load_checkpoint(tag="best")
+            logger.info("ckpt_latest not found — resumed from ckpt_best")
+        else:
+            logger.info("No checkpoint found — starting from epoch 1")
+    else:
+        logger.info("Fresh training run (use --resume to continue from checkpoint)")
+
+    trainer.train(train_loader, val_loader, start_epoch=start_epoch)
 
     # Final test evaluation
     logger.info("Running final test evaluation...")
@@ -664,3 +732,4 @@ if __name__ == "__main__":
 
     with open(Path(cfg["output_dir"]) / "test_results.json", "w") as f:
         json.dump(test_results, f, indent=2)
+
