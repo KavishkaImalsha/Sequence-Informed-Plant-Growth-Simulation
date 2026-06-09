@@ -475,34 +475,103 @@ class SIPGSTrainer_V2:
                         f"D={step_logs['loss_disc']:.4f}"
                     )
 
-            # Epoch-level train metrics
+            # ── Epoch-level train metrics ─────────────────────────────────────────
             train_log = {f"train/{k}": float(np.mean(v)) for k, v in epoch_losses.items()}
             self._log(train_log, epoch)
+
+            # ── Unified metrics/ namespace (same scale as val/) ───────────────
+            # TensorBoard overlays tags with the same suffix on one graph
+            # when you select them in the left panel.
+            # MSE: convert from [0,1] scale → pixel scale (multiply by 255²)
+            train_mse_01   = float(np.mean(epoch_losses.get("loss_mse",   [0])))
+            train_ssim_los = float(np.mean(epoch_losses.get("loss_ssim",  [0])))
+            train_g_loss   = float(np.mean(epoch_losses.get("loss_gen",   [0])))
+            train_d_loss   = float(np.mean(epoch_losses.get("loss_disc",  [0])))
+            train_kl       = float(np.mean(epoch_losses.get("loss_kl",    [0])))
+            train_perc     = float(np.mean(epoch_losses.get("loss_perc",  [0])))
+
+            unified_train = {
+                # Pixel-scale MSE — matches val/mse scale
+                "metrics/mse/train":      train_mse_01 * (255 ** 2),
+                # SSIM: convert 1-SSIM loss → SSIM value, matches val/ssim
+                "metrics/ssim/train":     1.0 - train_ssim_los,
+                # Generator & Discriminator losses
+                "metrics/loss_G/train":   train_g_loss,
+                "metrics/loss_D/train":   train_d_loss,
+                "metrics/kl/train":       train_kl,
+                "metrics/perceptual/train": train_perc,
+            }
+            self._log(unified_train, epoch)
+
+            logger.info(
+                f"Ep {epoch:03d} TRAIN ─ "
+                f"G={train_g_loss:.4f}  D={train_d_loss:.4f}  "
+                f"MSE_px={train_mse_01*(255**2):.1f}  "
+                f"SSIM={1-train_ssim_los:.4f}  "
+                f"KL={train_kl:.4f}"
+            )
+
             self.sched_gen.step()
             self.sched_disc.step()
 
-            # Validation
+            # ── Validation ─────────────────────────────────────────────────────
             if epoch % cfg["eval_every_n_epochs"] == 0:
                 val_metrics = self._evaluate(val_loader)
+
+                # Log under val/ (existing)
                 val_log = {f"val/{k}": v for k, v in val_metrics.items()}
                 self._log(val_log, epoch)
 
+                # Also log under unified metrics/ namespace — same graph as train
+                unified_val = {
+                    "metrics/mse/val":        val_metrics.get("mse",     0),
+                    "metrics/ssim/val":       val_metrics.get("ssim",    0),
+                    "metrics/loss_G/val":     val_metrics.get("mse",     0),  # proxy
+                    "metrics/mse_tw/val":     val_metrics.get("mse_tw",  0),
+                    "metrics/ssim_tw/val":    val_metrics.get("ssim_tw", 0),
+                    "metrics/fid/val":        val_metrics.get("fid",     0),
+                }
+                self._log(unified_val, epoch)
+
+                # ── Overfitting diagnosis in terminal ────────────────────────
+                val_mse    = val_metrics.get("mse",    0)
+                val_ssim   = val_metrics.get("ssim",   0)
+                tr_mse_px  = train_mse_01 * (255 ** 2)
+                tr_ssim    = 1.0 - train_ssim_los
+
+                mse_gap  = val_mse  - tr_mse_px
+                ssim_gap = tr_ssim  - val_ssim
+
+                if mse_gap > 1500 or ssim_gap > 0.10:
+                    fit_status = "⚠️  OVERFITTING  (val >> train)"
+                elif val_mse > 8000 and tr_mse_px > 7000:
+                    fit_status = "⚠️  UNDERFITTING (both losses too high)"
+                else:
+                    fit_status = "✅  GOOD FIT"
+
                 logger.info(
-                    f"\n{'='*55}\n"
-                    f"  Val Epoch {epoch:03d}\n"
-                    f"  FID      : {val_metrics.get('fid', 0):.2f}   (target < 42)\n"
-                    f"  MSE      : {val_metrics.get('mse', 0):.1f}   (target < 3000)\n"
-                    f"  MSE_tw   : {val_metrics.get('mse_tw', 0):.1f}   (target < 1500)\n"
-                    f"  SSIM_tw  : {val_metrics.get('ssim_tw', 0):.4f}   (target > 0.940)\n"
-                    f"  CS-SSIM_tw: {val_metrics.get('cs_ssim_tw', 0):.4f}   (real ref)\n"
-                    f"{'='*55}"
+                    f"\n{'='*60}\n"
+                    f"  Val Epoch {epoch:03d}          {fit_status}\n"
+                    f"  {'Metric':<14} {'Train':>10} {'Val':>10} {'Gap':>10}\n"
+                    f"  {'-'*46}\n"
+                    f"  {'MSE (pixel)':<14} {tr_mse_px:>10.1f} {val_mse:>10.1f} "
+                    f"{mse_gap:>+10.1f}\n"
+                    f"  {'SSIM':<14} {tr_ssim:>10.4f} {val_ssim:>10.4f} "
+                    f"{-ssim_gap:>+10.4f}\n"
+                    f"  {'SSIM_tw':<14} {'---':>10} "
+                    f"{val_metrics.get('ssim_tw',0):>10.4f} {'target>0.94':>10}\n"
+                    f"  {'MSE_tw':<14} {'---':>10} "
+                    f"{val_metrics.get('mse_tw',0):>10.1f} {'target<1500':>10}\n"
+                    f"  {'FID':<14} {'---':>10} "
+                    f"{val_metrics.get('fid',0):>10.2f} {'target<42':>10}\n"
+                    f"{'='*60}"
                 )
 
                 ssim_tw = val_metrics.get("ssim_tw", -1.0)
                 if ssim_tw > self.best_ssim_tw:
                     self.best_ssim_tw = ssim_tw
                     self._save_checkpoint(epoch, tag="best")
-                    logger.info(f"  ✓ New best SSIM_tw={self.best_ssim_tw:.4f}")
+                    logger.info(f"  ✨ New best SSIM_tw={self.best_ssim_tw:.4f} — checkpoint saved")
 
                 if self.stopper.step(ssim_tw):
                     logger.info(
