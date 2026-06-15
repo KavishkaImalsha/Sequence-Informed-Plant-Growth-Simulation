@@ -450,8 +450,8 @@ def compute_discriminator_loss(
         loss_disc : scalar tensor
         loss_val  : float for logging
     """
-    loss = discriminator_lsgan_loss(d_real_output, d_fake_output)
-    return loss, loss.item()
+    loss, disc_val = discriminator_lsgan_loss(d_real_output, d_fake_output)
+    return loss, disc_val
 
 
 # ===========================================================================
