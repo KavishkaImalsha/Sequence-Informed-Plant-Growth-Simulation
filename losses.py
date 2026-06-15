@@ -204,26 +204,45 @@ def generator_lsgan_loss(d_fake_output: Dict) -> torch.Tensor:
 def discriminator_lsgan_loss(
     d_real_output: Dict,
     d_fake_output: Dict,
-) -> torch.Tensor:
+    label_smooth:  float = 0.9,   # one-sided label smoothing: real=0.9 not 1.0
+) -> Tuple[torch.Tensor, float]:
     """
-    LSGAN discriminator loss:
-        L_D = 0.5 · [E[(D(y)-1)²]  +  E[D(ŷ)²]]
+    LSGAN discriminator loss with one-sided label smoothing.
+
+    Without label smoothing, D reaches near-zero loss in 1-2 epochs and
+    the generator receives no useful adversarial gradient.
+    Setting real_label=0.9 keeps D slightly uncertain, maintaining a
+    useful gradient signal throughout training.
+
+        L_D = 0.5 · [E[(D(y)-0.9)²]  +  E[D(ŷ)²]]
 
     Args:
         d_real_output : dict from D(y)
         d_fake_output : dict from D(ŷ.detach())
+        label_smooth  : real target label (0.85-0.95 recommended)
 
-    Returns: scalar
+    Returns: (loss tensor, scalar float for logging)
     """
     loss = torch.tensor(0.0, device=d_real_output["D1"]["pred"].device)
     preds_real = _extract_preds(d_real_output)
     preds_fake = _extract_preds(d_fake_output)
     for pr, pf in zip(preds_real, preds_fake):
+        real_target = torch.full_like(pr, label_smooth)  # 0.9, not 1.0
         loss = loss + 0.5 * (
-            F.mse_loss(pr, torch.ones_like(pr)) +
+            F.mse_loss(pr, real_target) +
             F.mse_loss(pf, torch.zeros_like(pf))
         )
-    return loss / len(preds_real)
+    disc_val = (loss / len(preds_real)).item()
+    return loss / len(preds_real), disc_val
+
+
+def compute_discriminator_loss(
+    d_real_output: Dict,
+    d_fake_output: Dict,
+    label_smooth:  float = 0.9,
+) -> Tuple[torch.Tensor, float]:
+    """Alias kept for backward compatibility with train_v2.py."""
+    return discriminator_lsgan_loss(d_real_output, d_fake_output, label_smooth)
 
 
 # ===========================================================================
@@ -233,23 +252,22 @@ def discriminator_lsgan_loss(
 def feature_matching_loss(
     d_real_output: Dict,
     d_fake_output: Dict,
-    lambda_fm:     float = 10.0,
+    lambda_fm:     float = 1.0,   # NOTE: weighting is now applied externally
 ) -> torch.Tensor:
     """
     Match intermediate discriminator features between real and fake frames.
 
-    L_FM = Σ_{s∈{D1,D2}} Σ_{i} (1/N_i) · ||D_s_i(y) - D_s_i(ŷ)||_1
+    L_FM = (1/N) · Σ_{s∈{D1,D2}} Σ_{i} ||D_s_i(y) - D_s_i(ŷ)||_1
 
-    This gives the generator a dense, stable learning signal independent of
-    discriminator confidence, preventing the generator from under-training
-    when D is too strong.  Typical weight: λ_fm = 10.
+    The lambda_fm weight is applied EXTERNALLY in compute_total_generator_loss.
+    This function returns the raw (unweighted) feature matching loss.
 
     Args:
-        d_real_output : dict from D(y)    — real features (detached from D graph)
+        d_real_output : dict from D(y)    — real features
         d_fake_output : dict from D(ŷ)   — fake features
-        lambda_fm     : weighting coefficient
+        lambda_fm     : kept for API compatibility, not used internally
 
-    Returns: scalar
+    Returns: raw (unweighted) scalar loss
     """
     loss = torch.tensor(0.0, device=d_real_output["D1"]["pred"].device)
     n_scales = 0
@@ -399,13 +417,12 @@ def compute_total_generator_loss(
     total = (
         l_cvae
         + lambda_adv  * l_adv
-        + l_fm                         # already weighted internally
+        + lambda_fm   * l_fm      # λ_fm applied here ONLY (not inside feature_matching_loss)
         + lambda_perc * l_perc
         + lambda_ssim * l_ssim
         + lambda_mse  * l_mse
+        + l_temp
     )
-    # Note: l_temp is included inside l_fm weight scope for convenience
-    total = total + l_temp
 
     log_dict = {
         "loss_gen":   total.item(),

@@ -97,16 +97,15 @@ def default_config() -> Dict:
         "latent_size":    256,
         "n_res_blocks":   2,
         # Loss weights
-        "beta":           0.90,            # KL weight (matches best SI-PGS)
-        "lambda_adv":     0.05,
-        "lambda_fm":      10.0,            # feature matching (critical for stability)
+        "beta":           0.90,            # KL weight target (annealed from 0.01)
+        "kl_warmup_epochs": 30,            # epochs to ramp beta 0.01 → target
+        "lambda_adv":     0.10,            # increased: D won't dominate with smoothing
+        "lambda_fm":      2.0,             # reduced: was double-weighted (10×10=100x!)
         "lambda_perc":    1.0,             # VGG perceptual (key for FID)
         "lambda_temp":    0.5,             # temporal coherence (key for SSIM_tw)
-        "lambda_ssim":    1.0,             # directly optimises SSIM metric
+        "lambda_ssim":    2.0,             # increased: directly targets SSIM metric
         "lambda_mse":     1.0,
-        # Speed: VGG perceptual loss is expensive — compute every N steps
-        # Set to 1 for maximum quality, 5 for 2x speedup, 10 for 3x speedup
-        "perc_freq":      5,
+        "perc_freq":      5,               # VGG computed every N steps for speed
         # Optimisers (TTUR: D_lr > G_lr)
         "lr_gen":         1e-4,
         "lr_disc":        4e-4,
@@ -251,8 +250,26 @@ class SIPGSTrainer_V2:
         self.best_ssim_tw = -1.0
         self.global_step  = 0
 
+    # ── KL Annealing helper ──────────────────────────────────────────────
+    def _compute_beta(self, epoch: int) -> float:
+        """
+        Linear KL annealing: beta ramps from 0.01 to target over kl_warmup_epochs.
+
+        Why: Setting beta=0.90 from epoch 1 forces the encoder to match N(0,I)
+        immediately, before the decoder has learned anything. This causes the
+        latent code to collapse to zero (KL ≈ 0.01) and the model ignores the
+        environmental conditioning entirely.
+
+        Annealing lets the model first learn pixel-level reconstruction
+        (beta≈0), then progressively regularise the latent space.
+        """
+        warmup = max(1, self.cfg.get("kl_warmup_epochs", 30))
+        target = self.cfg.get("beta", 0.90)
+        frac   = min(1.0, epoch / warmup)
+        return 0.01 + frac * (target - 0.01)
+
     # ── Single Training Step ───────────────────────────────────────────────
-    def _train_step(self, batch: Dict) -> Dict[str, float]:
+    def _train_step(self, batch: Dict, epoch: int = 1) -> Dict[str, float]:
         dev = self.device
         cfg = self.cfg
 
@@ -268,6 +285,9 @@ class SIPGSTrainer_V2:
         use_perc = (self.global_step % cfg.get("perc_freq", 5) == 0)
         lambda_perc_this_step = cfg["lambda_perc"] if use_perc else 0.0
 
+        # KL-annealed beta for this step
+        current_beta = self._compute_beta(getattr(self, '_current_epoch', 1))
+
         with autocast(device_type='cuda', enabled=self.use_amp):
             x = self.encoder(env_seq, seq_len)                      # [B, 128]
             y_hat, mu, logvar = self.generator(x, y, y_prior, time_diff)
@@ -282,7 +302,7 @@ class SIPGSTrainer_V2:
                 d_fake_output=d_fake_for_gen,
                 d_real_output=d_real_for_fm,
                 perceptual_fn=self.vgg_loss,
-                beta=cfg["beta"],
+                beta=current_beta,            # annealed KL weight
                 lambda_adv=cfg["lambda_adv"],
                 lambda_fm=cfg["lambda_fm"],
                 lambda_perc=lambda_perc_this_step,
@@ -290,6 +310,7 @@ class SIPGSTrainer_V2:
                 lambda_ssim=cfg["lambda_ssim"],
                 lambda_mse=cfg["lambda_mse"],
             )
+            log_dict["beta"] = current_beta   # log annealed beta
 
         # ── Generator backward ─────────────────────────────────────────────
         self.opt_gen.zero_grad()
@@ -447,6 +468,7 @@ class SIPGSTrainer_V2:
         )
 
         for epoch in range(start_epoch, cfg["epochs"] + 1):
+            self._current_epoch = epoch   # expose epoch to _train_step for KL annealing
             self.encoder.train()
             self.generator.train()
             self.discriminator.train()
@@ -454,7 +476,7 @@ class SIPGSTrainer_V2:
             epoch_losses: Dict[str, List] = {}
 
             for i, batch in enumerate(train_loader):
-                step_logs = self._train_step(batch)
+                step_logs = self._train_step(batch, epoch=epoch)
 
                 for k, v in step_logs.items():
                     epoch_losses.setdefault(k, []).append(v)
