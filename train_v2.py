@@ -115,11 +115,11 @@ def default_config() -> Dict:
         # Scheduler
         "lr_min":         1e-6,
         # Training
-        "epochs":         200,
+        "epochs":         300,             # 300 needed to beat paper's SSIM_tw=0.951
         "grad_clip_lstm": 1.0,
         "grad_clip_gen":  5.0,
         # Early stopping (patience epochs, monitor SSIM_tw)
-        "early_stop_patience": 20,
+        "early_stop_patience": 30,          # stop if no SSIM_tw improvement for 30 ep
         # Logging
         "output_dir":     "output/sipgs_r_v2",
         "use_wandb":      False,
