@@ -428,18 +428,40 @@ class SIPGSTrainer_V2:
             logger.info(f"No checkpoint found at {ckpt} — starting from scratch.")
             return 1
 
-        # Load model weights
+        # Verify checkpoint integrity before loading (detect mid-save corruption)
+        required = ["feature_encoder.pt", "generator.pt", "discriminator.pt"]
+        for fname in required:
+            fpath = ckpt / fname
+            if not fpath.exists():
+                logger.warning(f"Checkpoint incomplete — missing {fname}. Starting fresh.")
+                return 1
+            try:
+                torch.load(fpath, map_location="cpu", weights_only=False)  # integrity check
+            except Exception as e:
+                logger.warning(
+                    f"Checkpoint '{tag}/{fname}' is CORRUPTED (mid-save kill detected).\n"
+                    f"  Error: {e}\n"
+                    f"  → Deleting corrupted checkpoint and starting from scratch."
+                )
+                import shutil
+                shutil.rmtree(ckpt, ignore_errors=True)
+                return 1
+
+        # Load model weights (weights_only=False required for state_dicts in PyTorch 2.x)
         self.encoder.load_state_dict(
-            torch.load(ckpt / "feature_encoder.pt", map_location=self.device))
+            torch.load(ckpt / "feature_encoder.pt", map_location=self.device,
+                       weights_only=False))
         self.generator.load_state_dict(
-            torch.load(ckpt / "generator.pt",       map_location=self.device))
+            torch.load(ckpt / "generator.pt",       map_location=self.device,
+                       weights_only=False))
         self.discriminator.load_state_dict(
-            torch.load(ckpt / "discriminator.pt",   map_location=self.device))
+            torch.load(ckpt / "discriminator.pt",   map_location=self.device,
+                       weights_only=False))
 
         # Load training state
         state_path = ckpt / "training_state.pt"
         if state_path.exists():
-            state = torch.load(state_path, map_location=self.device)
+            state = torch.load(state_path, map_location=self.device, weights_only=False)
             self.opt_gen.load_state_dict(state["opt_gen"])
             self.opt_disc.load_state_dict(state["opt_disc"])
             self.sched_gen.load_state_dict(state["sched_gen"])
