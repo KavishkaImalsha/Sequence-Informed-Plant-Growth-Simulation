@@ -252,7 +252,9 @@ def compute_discriminator_loss(
 def feature_matching_loss(
     d_real_output: Dict,
     d_fake_output: Dict,
-    lambda_fm:     float = 1.0,   # NOTE: weighting is now applied externally
+    lambda_fm:     float = 1.0,   # UNUSED — kept for API compatibility only.
+                                  # Weight is applied by the caller (compute_total_generator_loss).
+                                  # Do NOT apply lambda_fm here to avoid double-weighting.
 ) -> torch.Tensor:
     """
     Match intermediate discriminator features between real and fake frames.
@@ -278,7 +280,7 @@ def feature_matching_loss(
             n_elements = rf.numel() / rf.shape[0]   # per-sample element count
             loss = loss + F.l1_loss(ff, rf.detach()) / n_elements
         n_scales += 1
-    return lambda_fm * loss / n_scales
+    return loss / n_scales   # NOTE: unweighted — lambda_fm is applied by the caller
 
 
 # ===========================================================================

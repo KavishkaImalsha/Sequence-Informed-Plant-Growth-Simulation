@@ -97,18 +97,20 @@ def default_config() -> Dict:
         "latent_size":    256,
         "n_res_blocks":   2,
         # Loss weights
-        "beta":           0.90,            # KL weight target (annealed from 0.01)
-        "kl_warmup_epochs": 30,            # epochs to ramp beta 0.01 → target
-        "lambda_adv":     0.10,            # increased: D won't dominate with smoothing
-        "lambda_fm":      2.0,             # reduced: was double-weighted (10×10=100x!)
-        "lambda_perc":    1.0,             # VGG perceptual (key for FID)
-        "lambda_temp":    0.5,             # temporal coherence (key for SSIM_tw)
-        "lambda_ssim":    2.0,             # increased: directly targets SSIM metric
+        "beta":           0.20,            # FIX: was 0.90 — caused KL collapse (encoder ignores env conditioning)
+        "kl_warmup_epochs": 10,            # FIX: was 30 — restart annealing from low beta after resume
+        "lambda_adv":     0.15,            # FIX: was 0.10 — increase to revive near-zero discriminator gradient
+        "lambda_fm":      1.0,             # FIX: was 2.0 — feature_matching_loss applies λ_fm internally;
+                                           #      compute_total_generator_loss also multiplies by λ_fm,
+                                           #      so effective weight was λ_fm² = 4×. Setting to 1.0 gives net weight=1.0
+        "lambda_perc":    2.0,             # FIX: was 1.0 — FID is 10× above target; VGG loss is key driver
+        "lambda_temp":    0.5,             # unchanged — temporal coherence (key for SSIM_tw)
+        "lambda_ssim":    3.0,             # FIX: was 2.0 — train SSIM stuck at 0.388, push harder
         "lambda_mse":     1.0,
-        "perc_freq":      5,               # VGG computed every N steps for speed
+        "perc_freq":      1,               # FIX: was 5 — VGG was only active 20% of steps; now every step
         # Optimisers (TTUR: D_lr > G_lr)
         "lr_gen":         1e-4,
-        "lr_disc":        4e-4,
+        "lr_disc":        2e-4,            # FIX: was 4e-4 — D saturates too fast; halved to keep gradient alive
         "betas_gen":      [0.5, 0.999],
         "betas_disc":     [0.5, 0.999],
         "weight_decay":   1e-5,
